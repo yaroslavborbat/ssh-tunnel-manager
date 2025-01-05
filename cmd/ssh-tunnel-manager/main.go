@@ -39,15 +39,25 @@ func main() {
 
 	err = conf.Validate()
 	if err != nil {
-		slog.Error("", logger.SlogErr(err))
+		slog.Error("Failed to validate config", logger.SlogErr(err))
 		os.Exit(1)
 	}
 
-	slog.Info(fmt.Sprintf("Configuration: %v", conf))
+	b, err := conf.Marshal()
+	if err != nil {
+		slog.Error("Failed to marshal config", logger.SlogErr(err))
+		os.Exit(1)
+	}
+	slog.Info(fmt.Sprintf("Configuration:\n%s", string(b)))
 
 	ctx := signals.SetupSignalHandler()
 
-	mgr := manager.NewSSHTunnelManager(conf.Tunnels, conf.StartSSHAgent)
+	mgr, err := manager.NewSSHTunnelManager(conf.Type, conf.Tunnels)
+	if err != nil {
+		slog.Error("Failed to create manager", logger.SlogErr(err))
+		os.Exit(1)
+	}
+
 	err = mgr.Run(ctx)
 	if err != nil {
 		slog.Error("", logger.SlogErr(err))

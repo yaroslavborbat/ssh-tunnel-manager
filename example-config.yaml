@@ -1,3 +1,4 @@
+type: "native"
 defaultUser: "user"
 defaultBindIP: "127.0.0.1"
 defaultPassPhrasePath: "/app/.ssh/phrase"

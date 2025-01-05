@@ -12,8 +12,15 @@ var IsNotValidErr = errors.New("config is not valid")
 
 const DefaultPath = "~/.ssh-tunnel-manager.yaml"
 
+type Type string
+
+const (
+	Native  Type = "native"
+	Wrapped Type = "wrapped"
+)
+
 type Config struct {
-	StartSSHAgent         bool     `yaml:"start_ssh_agent"`
+	Type                  Type     `yaml:"type"`
 	DefaultUser           string   `yaml:"defaultUser"`
 	DefaultBindIP         string   `yaml:"defaultBindIP"`
 	DefaultPrivateKeyPath string   `yaml:"defaultPrivateKeyPath"`
@@ -34,6 +41,12 @@ type Tunnel struct {
 }
 
 func (c *Config) Validate() error {
+	switch c.Type {
+	case Native, Wrapped:
+	default:
+		return fmt.Errorf("unknown type %q: %w", c.Type, IsNotValidErr)
+	}
+
 	var errs error
 	names := make(map[string]struct{})
 	for _, t := range c.Tunnels {
@@ -89,6 +102,10 @@ func (t *Tunnel) Validate() error {
 	return nil
 }
 
+func (c *Config) Marshal() (out []byte, err error) {
+	return yaml.Marshal(c)
+}
+
 func Load(path string) (*Config, error) {
 	configPath := DefaultPath
 	if path != "" {
@@ -99,7 +116,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 	config := &Config{
-		StartSSHAgent: true,
+		Type: Native,
 	}
 	err = yaml.Unmarshal(bytes, config)
 	if err != nil {

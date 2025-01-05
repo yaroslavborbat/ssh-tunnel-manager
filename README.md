@@ -6,6 +6,9 @@ A lightweight Go service to manage SSH tunnels and ensure they stay active.
 
 - Simple YAML-based configuration for defining tunnels.
 - Monitors and maintains SSH tunnels to ensure they're always up.
+- Supports two implementations for SSH tunneling:
+  - **Native**: Uses a library-based implementation of SSH.
+  - **Wrapped**: Uses the `ssh` command-line tool via `exec`.
 
 ---
 
@@ -16,7 +19,9 @@ The configuration is defined in a YAML file. A sample configuration can be found
 ### Configuration Fields
 
 #### Top-Level Fields
-
+- **type**: Specifies the implementation for SSH tunneling. Options are:
+  - `native`: Uses a library-based SSH implementation (default).
+  - `wrapped`: Uses the ssh command-line tool via exec.
 - **defaultUser**: Default username for SSH connections (optional if specified per tunnel).
 - **defaultBindIP**: Default bind address for local forwarding (e.g., `127.0.0.1`).
 - **defaultPrivateKeyPath**: Path to the default private key for SSH authentication.
