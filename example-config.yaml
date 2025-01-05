@@ -1,0 +1,18 @@
+defaultUser: "user"
+defaultBindIP: "127.0.0.1"
+defaultPassPhrasePath: "/app/.ssh/phrase"
+defaultPrivateKeyPath: "/app/.ssh/id_rsa"
+tunnels:
+# ssh -N user@example-host1 -L 127.0.0.1:2001:192.168.0.10:6443
+- name: "name1"
+  host: "example-host1"
+  hostIP: "192.168.0.10"
+  hostPort: 6443
+  bindPort: 2001
+
+# ssh -N user@example-host2 -L 127.0.0.1:2002:192.168.0.11:6443
+- name: "name2"
+  host: "example-host2"
+  hostIP: "192.168.0.11"
+  hostPort: 6443
+  bindPort: 2002

@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  ssh-tunnel-manager:
+    container_name: "ssh-tunnel-manager"
+    image: "ssh-tunnel-manager"
+    network_mode: "host"
+    volumes:
+      - /var/lib/ssh-tunnel-manager/config:/app/config:ro
+      - /var/lib/ssh-tunnel-manager/ssh:/app/.ssh:ro
+    command: ["--config", "/app/config/config.yaml"]
+    restart: always

@@ -1,0 +1,14 @@
+[Unit]
+Description=SSH tunnel manager
+After=docker.service
+Requires=docker.service
+
+[Service]
+Restart=always
+ExecStart=/usr/bin/docker compose -f /var/lib/ssh-tunnel-manager/docker-compose.yaml up
+ExecStop=/usr/bin/docker compose -f /var/lib/ssh-tunnel-manager/docker-compose.yaml down
+WorkingDirectory=/var/lib/ssh-tunnel-manager
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

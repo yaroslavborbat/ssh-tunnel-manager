@@ -1,0 +1,16 @@
+version: 3
+
+vars:
+  IMAGE: "ssh-tunnel-manager"
+
+tasks:
+  docker:build:
+    desc: "Docker Build"
+    cmds:
+      - docker build -t {{ .IMAGE }} .
+
+  go:build:
+    desc: "GO Build"
+    cmds:
+      - mkdir -p bin
+      - go build -o bin/manager cmd/ssh-tunnel-manager/main.go
