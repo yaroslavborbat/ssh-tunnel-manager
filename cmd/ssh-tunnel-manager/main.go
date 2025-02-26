@@ -1,15 +1,17 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"ssh-tunell-manager/pkg/config"
 	"ssh-tunell-manager/pkg/logger"
 	"ssh-tunell-manager/pkg/manager"
-	"ssh-tunell-manager/pkg/signals"
 )
 
 type Options struct {
@@ -50,7 +52,8 @@ func main() {
 	}
 	slog.Info(fmt.Sprintf("Configuration:\n%s", string(b)))
 
-	ctx := signals.SetupSignalHandler()
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 
 	mgr, err := manager.NewSSHTunnelManager(conf.Type, conf.Tunnels)
 	if err != nil {
