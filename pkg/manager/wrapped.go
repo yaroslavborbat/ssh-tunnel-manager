@@ -2,8 +2,8 @@ package manager
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -11,22 +11,26 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"ssh-tunell-manager/pkg/config"
 	"ssh-tunell-manager/pkg/logger"
 )
 
 const (
-	sshCMD        = "ssh"
-	sshAddExp     = "ssh-add.exp"
-	sshAgentCmd   = "ssh-agent"
-	passPhraseEnv = "PASSPHRASE"
+	sshCMD           = "ssh"
+	sshAddExp        = "ssh-add.exp"
+	sshAgentCmd      = "ssh-agent"
+	passPhraseEnv    = "PASSPHRASE"
+	maxSSHErrorBytes = 8 * 1024
 )
 
 var _ SSHTunnelManager = &wrappedSSHTunnelManager{}
 
 type wrappedSSHTunnelManager struct {
-	tunnels []config.Tunnel
+	tunnels            []config.Tunnel
+	agentSocket        string
+	managedAgentSocket string
 }
 
 func newWrappedSSHTunnelManager(tunnels []config.Tunnel) *wrappedSSHTunnelManager {
@@ -36,9 +40,14 @@ func newWrappedSSHTunnelManager(tunnels []config.Tunnel) *wrappedSSHTunnelManage
 }
 
 func (m *wrappedSSHTunnelManager) Run(ctx context.Context) error {
-	slog.Info("Start ssh-agent")
-	if err := m.startAgent(ctx); err != nil {
-		return err
+	for _, tunnel := range m.tunnels {
+		if tunnel.SSHAgent {
+			m.agentSocket = os.Getenv("SSH_AUTH_SOCK")
+			if m.agentSocket == "" {
+				return fmt.Errorf("SSH_AUTH_SOCK is required when useSSHAgent is enabled")
+			}
+			break
+		}
 	}
 
 	type phraseKey struct {
@@ -47,6 +56,9 @@ func (m *wrappedSSHTunnelManager) Run(ctx context.Context) error {
 	}
 	phraseKeyMap := make(map[phraseKey]struct{})
 	for _, t := range m.tunnels {
+		if t.SSHAgent || t.PassPhrasePath == "" || t.PrivateKeyPath == "" {
+			continue
+		}
 		pk := phraseKey{
 			phrase: t.PassPhrasePath,
 			key:    t.PrivateKeyPath,
@@ -55,7 +67,13 @@ func (m *wrappedSSHTunnelManager) Run(ctx context.Context) error {
 			continue
 		}
 		phraseKeyMap[pk] = struct{}{}
-		slog.Info("exec ssh-add", slog.String("key", pk.key), slog.String("phrase", pk.phrase))
+		if len(phraseKeyMap) == 1 {
+			slog.Info("Start ssh-agent")
+			if err := m.startAgent(ctx); err != nil {
+				return err
+			}
+		}
+		slog.Info("exec ssh-add", slog.String("key", pk.key))
 		if err := m.sshAdd(pk.phrase, pk.key); err != nil {
 			return err
 		}
@@ -73,12 +91,17 @@ func (m *wrappedSSHTunnelManager) Run(ctx context.Context) error {
 				log.Info("Starting SSHTunnel")
 				err := m.runTunnel(ctx, &t)
 				if err != nil {
-					if errors.Is(ctx.Err(), context.Canceled) {
+					if ctx.Err() != nil {
 						return
 					}
 					log.Error("error running tunnel", logger.SlogErr(err))
 				}
 				log.Info("SSHTunnel finished. Rerun...")
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(time.Second):
+				}
 			}
 		}()
 	}
@@ -96,12 +119,7 @@ func (m *wrappedSSHTunnelManager) startAgent(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("error parsing ssh-agent data: %w", err)
 	}
-	if err = os.Setenv("SSH_AUTH_SOCK", sshAuthSock); err != nil {
-		return fmt.Errorf("error setting SSH_AUTH_SOCK: %w", err)
-	}
-	if err = os.Setenv("SSH_AGENT_PID", strconv.Itoa(sshAgentPID)); err != nil {
-		return fmt.Errorf("error setting SSH_AGENT_PID: %w", err)
-	}
+	m.managedAgentSocket = sshAuthSock
 
 	process, err := os.FindProcess(sshAgentPID)
 	if err != nil {
@@ -114,7 +132,6 @@ func (m *wrappedSSHTunnelManager) startAgent(ctx context.Context) error {
 					slog.Error("Failed to kill SSH agent process")
 				}
 			}
-
 		}()
 		<-ctx.Done()
 	}()
@@ -134,9 +151,13 @@ func (m *wrappedSSHTunnelManager) sshAdd(passPhrasePath, privateKeyPath string) 
 
 	cmd := exec.Command(sshAddExp, privateKeyPath)
 	env := os.Environ()
-	env = append(env,
+	env = append(
+		env,
 		fmt.Sprintf("%s=%s", passPhraseEnv, phrase),
 	)
+	if m.managedAgentSocket != "" {
+		env = setEnvironmentValue(env, "SSH_AUTH_SOCK", m.managedAgentSocket)
+	}
 	cmd.Env = env
 	out, err := cmd.Output()
 	if err != nil {
@@ -149,7 +170,27 @@ func (m *wrappedSSHTunnelManager) sshAdd(passPhrasePath, privateKeyPath string) 
 func (m *wrappedSSHTunnelManager) runTunnel(ctx context.Context, tunnel *config.Tunnel) error {
 	name, args := m.makeSShTunelCommandArgs(tunnel)
 	cmd := exec.CommandContext(ctx, name, args...)
-	return cmd.Run()
+	if tunnel.SSHAgent {
+		cmd.Env = setEnvironmentValue(os.Environ(), "SSH_AUTH_SOCK", m.agentSocket)
+	} else if m.managedAgentSocket != "" {
+		cmd.Env = setEnvironmentValue(os.Environ(), "SSH_AUTH_SOCK", m.managedAgentSocket)
+	} else {
+		cmd.Env = setEnvironmentValue(os.Environ(), "SSH_AUTH_SOCK", "")
+	}
+
+	diagnostics := newTailBuffer(maxSSHErrorBytes)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = diagnostics
+	err := cmd.Run()
+	if err == nil {
+		return nil
+	}
+
+	output := strings.TrimSpace(diagnostics.String())
+	if output == "" {
+		return fmt.Errorf("ssh command failed without diagnostic output: %w", err)
+	}
+	return fmt.Errorf("ssh command failed: %w: %s", err, output)
 }
 
 // Example ssh -N user@example-host -L 127.0.0.1:2001:192.168.0.10:6443
@@ -158,15 +199,74 @@ func (m *wrappedSSHTunnelManager) makeSShTunelCommandArgs(tunnel *config.Tunnel)
 	args := []string{
 		"-o",
 		"StrictHostKeyChecking=no",
+		"-o",
+		"ExitOnForwardFailure=yes",
 		"-N",
-		fmt.Sprintf("%s@%s", tunnel.User, tunnel.Host),
-		"-L",
-		fmt.Sprintf("%s:%d:%s:%d", tunnel.BindIP, tunnel.BindPort, tunnel.HostIP, tunnel.HostPort),
 	}
-	if tunnel.PrivateKeyPath != "" {
-		args = append(args, "-i", tunnel.PrivateKeyPath)
+	if tunnel.ForwardType == config.Dynamic {
+		args = append(
+			args,
+			"-D", fmt.Sprintf("%s:%d", tunnel.BindIP, tunnel.BindPort),
+			"-C",
+		)
+	} else {
+		args = append(
+			args,
+			"-L", fmt.Sprintf("%s:%d:%s:%d", tunnel.BindIP, tunnel.BindPort, tunnel.HostIP, tunnel.HostPort),
+		)
 	}
+	if tunnel.ConnectionTimeout > 0 {
+		seconds := int((tunnel.ConnectionTimeout-1)/time.Second + 1)
+		args = append(args, "-o", fmt.Sprintf("ConnectTimeout=%d", seconds))
+	}
+	if !tunnel.SSHAgent {
+		if m.managedAgentSocket == "" {
+			args = append(args, "-o", "IdentityAgent=none")
+		}
+		if tunnel.PrivateKeyPath != "" {
+			args = append(args, "-o", "IdentitiesOnly=yes", "-i", tunnel.PrivateKeyPath)
+		}
+	}
+	args = append(args, fmt.Sprintf("%s@%s", tunnel.User, tunnel.Host))
 	return name, args
+}
+
+type tailBuffer struct {
+	buffer []byte
+	limit  int
+}
+
+func newTailBuffer(limit int) *tailBuffer {
+	return &tailBuffer{limit: limit}
+}
+
+func (b *tailBuffer) Write(p []byte) (int, error) {
+	written := len(p)
+	if len(p) >= b.limit {
+		b.buffer = append(b.buffer[:0], p[len(p)-b.limit:]...)
+		return written, nil
+	}
+	if excess := len(b.buffer) + len(p) - b.limit; excess > 0 {
+		copy(b.buffer, b.buffer[excess:])
+		b.buffer = b.buffer[:len(b.buffer)-excess]
+	}
+	b.buffer = append(b.buffer, p...)
+	return written, nil
+}
+
+func (b *tailBuffer) String() string {
+	return string(b.buffer)
+}
+
+func setEnvironmentValue(environment []string, key, value string) []string {
+	prefix := key + "="
+	result := make([]string, 0, len(environment)+1)
+	for _, entry := range environment {
+		if !strings.HasPrefix(entry, prefix) {
+			result = append(result, entry)
+		}
+	}
+	return append(result, prefix+value)
 }
 
 var (
