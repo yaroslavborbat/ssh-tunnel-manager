@@ -1,8 +1,10 @@
-type: "native"
+type: "wrapped"
 defaultUser: "user"
 defaultBindIP: "127.0.0.1"
 defaultPassPhrasePath: "/app/.ssh/phrase"
 defaultPrivateKeyPath: "/app/.ssh/id_rsa"
+defaultUseSSHAgent: false
+defaultConnectionTimeout: "10s"
 tunnels:
 # ssh -N user@example-host1 -L 127.0.0.1:2001:192.168.0.10:6443
 - name: "name1"
@@ -14,6 +16,14 @@ tunnels:
 # ssh -N user@example-host2 -L 127.0.0.1:2002:192.168.0.11:6443
 - name: "name2"
   host: "example-host2"
+  useSSHAgent: true
+  connectionTimeout: "5s"
   hostIP: "192.168.0.11"
   hostPort: 6443
   bindPort: 2002
+
+# ssh -D localhost:12334 -q -C -N user@example-host3
+- name: "socks"
+  forwardType: "dynamic"
+  host: "example-host3"
+  bindPort: 12334
